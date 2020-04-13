@@ -1,5 +1,4 @@
 #!/usr/bin/perl
-package Service::AWS::Lightsail;
 
 use Cwd;
 use Paws;
@@ -24,9 +23,10 @@ Rex::Config->set_verbose_run(1);
 my $wp_root = '/home/bitnami/apps/wordpress/htdocs';
 
 task 'test', sub {
+  print Dumper \@_;
 #  my @blah = Rex::Config->get_path;
 #  say @blah;
-#  do_task('Service:AWS:Lightsail:wp_maint_mode_off');
+#  do_task('wp_maint_mode_off');
 #  my $from_dir = '/home/bitnami/apps/wordpress/htdocs/wp-content';
 #  my $to_dir = '/home/bitnami/ress/htdocs';
 #  sudo TRUE;
@@ -35,13 +35,13 @@ task 'test', sub {
   #die if $?;
   #say 'kjsdkjfd'; #  file '/home/bitnami/backups2', ensure => 'directory', on => '<local>';
 #my $server = $server->name;
-  #run_task('Service:AWS:Lightsail:test2', params => { 'blah' => 'blah2' });
-#  run_task('Service:AWS:Lightsail:test2', params => [ 'blah' ]);
+  #run_task('test2', params => { 'blah' => 'blah2' });
+#  run_task('test2', params => [ 'blah' ]);
 
 };
 
 task 'test2', sub {
-  die 'dying';
+  do_task('test');
 };
 
 
@@ -100,26 +100,26 @@ task 'wp_backup', sub {
     my $dir_does_not_exist = !is_dir($bu_dir);
     file $bu_dir, ensure => 'directory';
     if ($dir_does_not_exist) {
-      run_task('Service:AWS:Lightsail:git_init', params => { dir => $bu_dir });
+      run_task('git_init', params => { dir => $bu_dir });
     }
   };
 
   # Get maintenance mode status. Pretend we are already in maintenance mode
   # to keep site online while doing backup
-  my $maint_status = $skip_maint_mode || run_task('Service:AWS:Lightsail:wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
+  my $maint_status = $skip_maint_mode || run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
 
   $? = '';
-  run_task('Service:AWS:Lightsail:wp_maint_mode_on', on => $server) if !$maint_status;
+  run_task('wp_maint_mode_on', on => $server) if !$maint_status;
   if ($?) {
-    run_task('Service:AWS:Lightsail:wp_maint_mode_off', on => $server ) if !$maint_status;
+    run_task('wp_maint_mode_off', on => $server ) if !$maint_status;
     die 'Could not place site into maintenance mode. Aborting backup.';
   }
 
   my $r_file = '/home/bitnami/mysql_dumps/latest.sql';
   my $db_file = "$bu_dir/db/db.sql";
-  my $dump_success = run_task('Service:AWS:Lightsail:Service:AWS:Lightsail:dump_remote_db', on => $server);
+  my $dump_success = run_task('dump_remote_db', on => $server);
   if (!$dump_success) {
-    run_task('Service:AWS:Lightsail:wp_maint_mode_off', on => $server) if !$maint_status;
+    run_task('wp_maint_mode_off', on => $server) if !$maint_status;
     die 'Could not dump remote database. Placing site back online and aborting backup.';
   }
   download $r_file, $db_file;
@@ -134,7 +134,7 @@ task 'wp_backup', sub {
 
 
   # done with backup restore site
-  run_task('Service:AWS:Lightsail:wp_maint_mode_off', on => $server) unless $maint_status || $maint_remain;
+  run_task('wp_maint_mode_off', on => $server) unless $maint_status || $maint_remain;
 
   # commit the changes to git
   LOCAL {
@@ -153,15 +153,15 @@ task 'wp_upgrade', sub {
     return;
   }
 
-  run_task('Service:AWS:Lightsail:wp_backup', on => $server, params => { maint_mode   => 1,
+  run_task('wp_backup', on => $server, params => { maint_mode   => 1,
                                                    maint_remain => 1,
                                                    type         => 'wp_upgrade' });
   my $success = wp('core update');
-  run_task('Service:AWS:Lightsail:wp_maint_mode_on', on => $server);
+  run_task('wp_maint_mode_on', on => $server);
   #TODO: if $success != 1, restore backup
   $success = wp('core update-db');
   #TODO: if $success != 1, restore backup
-  run_task('Service:AWS:Lightsail:wp_maint_mode_off', on => $server);
+  run_task('wp_maint_mode_off', on => $server);
 };
 
 desc 'update all WP plugins';
@@ -174,7 +174,7 @@ task 'wp_update_all_plugins', sub {
 
   $count = wp('plugin list --update=available --status=active --format=count');
   if ($count) {
-    run_task('Service:AWS:Lightsail:wp_backup', on => $server, params =>{ type => 'plugin_upgrade' });
+    run_task('wp_backup', on => $server, params =>{ type => 'plugin_upgrade' });
   }
 
   #TODO: do something if $output != 1
@@ -191,7 +191,7 @@ task 'wp_update_all_themes', sub {
 
   $count = wp('theme list --update=available --status=active --format=count');
   if ($count) {
-    run_task('Service:AWS:Lightsail:wp_backup', on => $server, params =>{ type => 'theme_upgrade' });
+    run_task('wp_backup', on => $server, params =>{ type => 'theme_upgrade' });
   }
 
   #TODO: do something if $output != 1
@@ -225,21 +225,21 @@ task 'wp_rollback', sub {
 
 desc 'rollback WP to oldest backup';
 task 'wp_rollback_to_oldest', sub {
-  my $hash = run_task('Service:AWS:Lightsail:git_get_oldest_backup');
+  my $hash = run_task('git_get_oldest_backup');
 
-  run_task('Service:AWS:Lightsail:wp_rollback', on => $server, params => { hash => $hash } );
+  run_task('wp_rollback', on => $server, params => { hash => $hash } );
 };
 
 desc 'rollback WP to latest backup';
 task 'wp_rollback_to_newest', sub {
   LOCAL { run("git checkout master", cwd => "/home/bitnami/backups/$server"); };
-  run_task('Service:AWS:Lightsail:wp_rollback', on => $server );
+  run_task('wp_rollback', on => $server );
 };
 
 desc 'select WP backup';
 task 'wp_rollback_to_selected', sub {
-  my $hash = run_task('Service:AWS:Lightsail:git_list_backups', on => $server, params => { select => 1 });
-  run_task('Service:AWS:Lightsail:wp_rollback', on => $server, params => { hash => $hash } );
+  my $hash = run_task('git_list_backups', on => $server, params => { select => 1 });
+  run_task('wp_rollback', on => $server, params => { hash => $hash } );
 };
 
 
@@ -255,19 +255,19 @@ task 'wp_rpt_maint_mode', sub {
 
 desc 'toggle wordpress maintance mode';
 task 'wp_maint_toggle', sub {
-  my $is_active = run_task('Service:AWS:Lightsail:wp_rpt_maint_mode', on => $server, params => { quiet => 1} );
+  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1} );
   say 'Toggling maintenance mode';
   if ($is_active) {
     wp('maintenance-mode deactivate');
   } else {
     wp('maintenance-mode activate');
   }
-  run_task('Service:AWS:Lightsail:wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
+  run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
 };
 
 desc 'turn wordpress site maintenance mode on';
 task 'wp_maint_mode_on', sub {
-  my $is_active = run_task('Service:AWS:Lightsail:wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
+  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
   if ($is_active) {
     say 'Maintenance mode already active. Doing nothing';
   } else {
@@ -281,7 +281,7 @@ task 'wp_maint_mode_on', sub {
 
 desc 'turn wordress site maintenance mode off';
 task 'wp_maint_mode_off', sub {
-  my $is_active = run_task('Service:AWS:Lightsail:wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
+  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
   if ($is_active) {
     my $out = wp('maintenance-mode deactivate');
     if (!$out) {
@@ -396,7 +396,7 @@ task 'git_list_backups', sub {
 
 desc 'get oldest backup';
 task 'git_get_oldest_backup', sub {
-  my $commits = run_task('Service:AWS:Lightsail:git_list_backups', params => { quiet => 1 } );
+  my $commits = run_task('git_list_backups', params => { quiet => 1 } );
   my @sorted;
 
   foreach my $c (sort { $commits->{$b}{date} cmp $commits->{$a}{date} } keys %$commits) {
@@ -423,7 +423,7 @@ task 'restart_apache', sub {
 desc "Import database";
 task "import_remote_db", sub {
   my $file = '/home/bitnami/mysql_dumps/latest.sql';
-  my $dump_success = do_task('Service:AWS:Lightsail:dump_remote_db');
+  my $dump_success = do_task('dump_remote_db');
   die 'Unable to dump remote database' if !$dump_success;
   run "rm $file";
   download $file, '~/mysql_dumps/latest.sql';
@@ -479,12 +479,12 @@ task "update_system_full", sub {
   if ($server eq '<local>') {
     die 'No host passed to task. Aborting.';
   }
-  my $snapshot_name = run_task('Service:AWS:Lightsail:instance_snapshot', on => $server, params => { name => 'pre_update', wait => 1 } );
+  my $snapshot_name = run_task('instance_snapshot', on => $server, params => { name => 'pre_update', wait => 1 } );
   if (!$snapshot_name) {
     die 'Unable to take instance snapshot. Aborting.';
   }
 
-  run_task('Service:AWS:Lightsail:update_system_quick', on => $server);
+  run_task('update_system_quick', on => $server);
 };
 
 desc 'delay code execution until snapshot is available';
@@ -498,7 +498,7 @@ task 'snapshot_wait', sub {
   while (!$snapshot_exists && $loop_count < 120) {
     sleep 5;
     say 'Checking to see if snapshot is ready.';
-    $instances = run_task('Service:AWS:Lightsail:get_all_instance_snapshots', on => $server),
+    $instances = run_task('get_all_instance_snapshots', on => $server),
     $snapshot_exists = grep { $snapshot_name eq $_->Name && $_->State eq 'available' } @$instances;
     $loop_count++;
   }
@@ -634,7 +634,7 @@ task 'instance_create', sub {
   $service = Paws->service('Lightsail', region => $region);
 
 
-  my $regions = run_task('Service:AWS:Lightsail:get_aws_availability_zones');
+  my $regions = run_task('get_aws_availability_zones');
   my $available = grep { $region =~ /$_/ } @$regions;
   if (!$available) {
     die ('Supplied region is not available from this server. Available regions: ' . join ' ', @$regions);
@@ -657,7 +657,7 @@ task 'instance_create', sub {
   while (!$instance_exists && $loop_count < 120) {
     sleep 5;
     say 'Checking to see if instance is ready.';
-    my $instances = run_task('Service:AWS:Lightsail:instances_list', on => $server);
+    my $instances = run_task('instances_list', on => $server);
     $instance_exists = grep { $name eq $_->Name && $_->State->Name eq 'pending' } @$instances;
     $loop_count++;
   }
@@ -689,7 +689,7 @@ task 'instance_delete', sub {
   my $instance = $_[0]->{instance} || $_[1]->[0];
   die ('No instance name provided. Aborting.') if !$instance;
   die ('No instance by that name exists. Aborting.')
-    if !run_task('Service:AWS:Lightsail:instance_exists', params => { instance => $instance } );
+    if !run_task('instance_exists', params => { instance => $instance } );
 
   my $result = $service->DeleteInstance(
     InstanceName => $instance,
@@ -699,7 +699,7 @@ task 'instance_delete', sub {
 desc 'determine if instance exists';
 task 'instance_exists', sub {
   my $instance = $_[0]->{instance} || $_[1]->[0];
-  my $instances = run_task('Service:AWS:Lightsail:instances_list', params => { quiet => 1 } );
+  my $instances = run_task('instances_list', params => { quiet => 1 } );
   return grep { $_->Name eq $instance } @$instances;
 };
 
@@ -707,7 +707,7 @@ desc 'reboot instance';
 task 'instance_reboot', sub {
   my $instance = $_[0]->{instance} || $_[1]->[0];
 
-  my $exists = run_task('Service:AWS:Lightsail:instance_exists', params => { instance => $instance } );
+  my $exists = run_task('instance_exists', params => { instance => $instance } );
   die ('That instance does not exist. Aborting.') if !$exists;
 
   my $results = $service->RebootInstance(
@@ -731,12 +731,12 @@ task 'instances_list', sub {
 
 desc 'update hosts file';
 task 'update_hosts', sub {
-  my $instances = run_task('Service:AWS:Lightsail:instances_list');
+  my $instances = run_task('instances_list');
   foreach my $i (@$instances) {
     my $name = $i->Name;
     my $priv_ip = $i->PrivateIpAddress;
     my $pub_ip = $i->PublicIpAddress;
-    run_task('Service:AWS:Lightsail:add_host_entry', on => $server, params => [ $name, $priv_ip ]);
+    run_task('add_host_entry', on => $server, params => [ $name, $priv_ip ]);
   }
 };
 
@@ -767,7 +767,7 @@ task 'instance_snapshot', sub {
   my $result = $service->CreateInstanceSnapshot(InstanceSnapshotName => $snapshot_name, InstanceName => $server);
   if ($wait) {
     $? = '';
-    run_task('Service:AWS:Lightsail:snapshot_wait' => params => [ $snapshot_name ]);
+    run_task('snapshot_wait' => params => [ $snapshot_name ]);
     die ('Could not create snapshot') if $?;
   }
 
@@ -801,13 +801,13 @@ task 'get_all_instance_snapshots', sub {
 
 desc 'dumps all instance snapshots to screen';
 task 'dump_all_instance_snapshots', sub {
-  my $snaps = run_task('Service:AWS:Lightsail:get_all_instance_snapshots', on => $server);
+  my $snaps = run_task('get_all_instance_snapshots', on => $server);
   print Dumper $snaps;
 };
 
 desc 'return the most recent instance snapshot';
 task 'get_latest_instance_snapshot', sub {
-  my $snaps = run_task('Service:AWS:Lightsail:get_all_instance_snapshots', on => $server);
+  my $snaps = run_task('get_all_instance_snapshots', on => $server);
   my $newest = 0;
   foreach my $snap (@$snaps) {
     my $time = $snap->CreatedAt;
@@ -824,7 +824,7 @@ task 'get_latest_instance_snapshot', sub {
 
 desc 'dump the object of the most recently created instance object to the screen';
 task 'dump_latest_instance_snapshot', sub {
-  my $snap = run_task('Service:AWS:Lightsail:get_latest_instance_snapshot', on => $server);
+  my $snap = run_task('get_latest_instance_snapshot', on => $server);
   print Dumper $snap;
 
 };
@@ -835,7 +835,7 @@ task 'tag_instance', sub {
   my $instance = shift @$args;
   my @tags = @$args;
 
-  my $instances = run_task('Service:AWS:Lightsail:instances_list' => params { quiet => 1 });
+  my $instances = run_task('instances_list' => params { quiet => 1 });
 
   my $instance_exists;
   foreach my $i (@$instances) {
@@ -889,12 +889,12 @@ desc 'determine if static ip can be attached';
 task 'ip_is_available', sub {
   my $ip_name = $_[0]->{ip_name} || $_[1]->[0];
 
-  my $ips = run_task('Service:AWS:Lightsail:ips_list', params => { queit => 1 });
+  my $ips = run_task('ips_list', params => { queit => 1 });
   print Dumper $ips;
 
   my $available = grep { $_->Name eq $ip_name && !$_->IsAttached } @{$ips->StaticIps};
   if (!$available) {
-    run_task('Service:AWS:Lightsail:ips_list');
+    run_task('ips_list');
     return 0;
   }
 
@@ -910,14 +910,14 @@ task 'ip_attach', sub {
   die 'No instance name passed' if !$instance;
   die 'No ip name passed' if !$ip;
 
-  my $exists = run_task('Service:AWS:Lightsail:instance_exists', params => { instance => $instance });
+  my $exists = run_task('instance_exists', params => { instance => $instance });
 
   if (!$exists) {
-    run_task('Service:AWS:Lightsail:instances_list' => params => { quiet => 0 } );
+    run_task('instances_list' => params => { quiet => 0 } );
     die ('Supplied instance does not exist. Aborting.');
   }
 
-  my $available = run_task('Service:AWS:Lightsail:ip_is_available', params => { ip_name => $ip });
+  my $available = run_task('ip_is_available', params => { ip_name => $ip });
   die ('That IP address does not exist or is already attached. Aborting.') if !$available;
 
   my $result = $service->AttachStaticIp(
