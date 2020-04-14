@@ -328,6 +328,67 @@ task 'wp_fix_perms', sub {
   run "sudo chmod 640 $wp_root/wp-config.php";
 };
 
+desc 'increate php post_max_size and upload_max_size';
+task php_increase_file_upload_lim => sub {
+  my $size = $_[0]->{size};
+  die 'No size provide' if !$size;
+  my $file = '/opt/bitnami/php/etc/php.ini';
+
+  if ($size !~ /m$/i) {
+    $size .= 'M';
+  }
+
+  my ($num) = $size =~ /^(\d+)/;
+
+  if ($size !~ /${num}M/) {
+    die "Bad format: $size";
+  }
+
+  if ($num < 16 and $num > 1000) {
+    die "Upload size must be between 16M and 1000M";
+  }
+
+  my $fh;
+  eval {
+    $fh = file_read($file);
+  };
+
+  if($@) {
+    print "An error occured. $@.\n";
+  }
+
+  my $content = $fh->read_all;
+  my @content = split "\n", $content;
+
+  my $post_max_count = 0;
+  my $upload_max_filesize_count = 0;
+  foreach my $line (@content) {
+    if ($line =~ /^\s*post_max_size[\s*=]/) {
+      $post_max_count++;
+    }
+    if ($line =~ /^\s*upload_max_filesize[\s*=]/) {
+      $upload_max_filesize_count++;
+    }
+  }
+
+
+  die ('One or more keys does not exist in php.ini file. Aborting.') if !$post_max_count || !$upload_max_filesize_count;
+  die ('Keys appear more than once. Aborting.') if $post_max_count > 1 || $upload_max_filesize_count > 1;
+
+
+  sudo sub {
+    run "cp $file $file~",
+      auto_die => 1;
+  };
+
+  sudo sub {
+    sed qr{post_max_size.*$}, "post_max_size = $size", $file;
+    sed qr{upload_max_filesize.*$}, "upload_max_filesize = $size", $file;
+  };
+
+  run_task('restart_apache');
+
+};
 
 
 ### GIT STUFF ########################
