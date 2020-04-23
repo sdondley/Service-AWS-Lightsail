@@ -1,5 +1,3 @@
-#!/usr/bin/perl
-
 use Cwd;
 use Paws;
 use Rex -feature => [qw/1.4/];
@@ -10,34 +8,29 @@ use Time::Ago;
 use Data::Dumper qw(Dumper);
 use Time::Stamp localstamp => { -as => 'ltime', format => 'compact' };
 use Time::ParseDate;
+use Rex::Dondley::ProcessTaskArgs;
 use DateTime::Format::Strptime qw(strftime);
 use JSON::Parse 'parse_json';
-
-my $server = '';
-my $server_name = '';
 
 my $service = Paws->service('Lightsail', region => 'us-west-2');
 Rex::Config->set_path([Rex::Config->get_path, '/opt/bitnami/mysql/bin']);
 Rex::Config->set_verbose_run(1);
 
+group 'lightsail', 'WordPress-test', 'WordPress-ilwu63-2', 'ilwu63';
+group 'local', 'iMac5K';
+
+my $server;
+
+{
+no warnings 'once';
+$server = $main::server;
+}
+
 # common vars
 my $wp_root = '/home/bitnami/apps/wordpress/htdocs';
 
 task 'test', sub {
-  print Dumper \@_;
-#  my @blah = Rex::Config->get_path;
-#  say @blah;
-#  do_task('wp_maint_mode_off');
-#  my $from_dir = '/home/bitnami/apps/wordpress/htdocs/wp-content';
-#  my $to_dir = '/home/bitnami/ress/htdocs';
-#  sudo TRUE;
-#  sync ($from_dir, $bu_files, { download => 1, parameters => '--delete --archive' });
-  #say 'hello';
-  #die if $?;
-  #say 'kjsdkjfd'; #  file '/home/bitnami/backups2', ensure => 'directory', on => '<local>';
-#my $server = $server->name;
-  #run_task('test2', params => { 'blah' => 'blah2' });
-#  run_task('test2', params => [ 'blah' ]);
+  say $server;
 
 };
 
@@ -87,9 +80,10 @@ task 'dump_remote_db', sub {
 
 desc 'backup WordPress';
 task 'wp_backup', sub {
-  my $live_bu = $_[0]->{lc('maint_mode')} ? 0 : 1;
-  my $bu_type = $_[0]->{lc('type')} || 'reg_backup';
-  my $maint_remain = $_[0]->{lc('maint_remain')};
+  my $params = process_task_args \@_, 'maint_mode', 'bu_type', 'maint_remain', [ 0, 'reg_backup', 0] ;
+  my $live_bu = !$params->{maint_mode};
+  my $bu_type = $params->{bu_type};
+  my $maint_remain = $params->{maint_remain};
 
   # create backup directory
   my $time = ltime();
@@ -130,6 +124,9 @@ task 'wp_backup', sub {
 
   # rsync WordPress site from remote server
   sudo TRUE;
+  if(get_sudo_password()) {
+    sudo_password get_sudo_password();
+  }
   sync ($from_dir, $bu_files, { download => 1, parameters => '--delete --archive' });
   sudo FALSE;
 
@@ -203,12 +200,16 @@ task 'wp_update_all_themes', sub {
 ### Rolling back
 desc 'rollback wordpress site';
 task 'wp_rollback', sub {
-  my $hash = $_[0]->{lc('hash')};
+  my $params = process_task_args \@_, 'hash' => 1;
+  my $hash = $params->{hash};
   my $from_dir = "/home/bitnami/backups/$server/wp/";
 
   LOCAL { run("git checkout $hash", cwd => "/home/bitnami/backups/$server"); };
 
   sudo TRUE;
+  if(get_sudo_password()) {
+    sudo_password get_sudo_password();
+  }
   sync ($from_dir, $wp_root, { upload => 1, parameters => '--delete --archive' });
   sudo FALSE;
 
@@ -247,7 +248,8 @@ task 'wp_rollback_to_selected', sub {
 ### Maintenance mode functions
 desc 'report whether a site is in maintenance mode';
 task 'wp_rpt_maint_mode', sub {
-  my $quiet = $_[0]->{lc('quiet')} ? 1 : 0;
+  my $params = process_task_args \@_, 'quiet' => 1;
+  my $quiet = $params->{quiet};
   my $is_active = wp("maintenance-mode status");
   my $return = $is_active =~ /is not active/ ? 0 : 1;
   say $is_active if !$quiet;
@@ -323,6 +325,9 @@ task 'wp_remove_bitnami_link', sub {
 
 desc 'fix wordpress perms';
 task 'wp_fix_perms', sub {
+  if(get_sudo_password()) {
+    sudo_password get_sudo_password();
+  }
   run "sudo chown -R bitnami:daemon $wp_root";
   run "sudo find $wp_root -type d -exec chmod 775 {} \;";
   run "sudo find $wp_root -type f -exec chmod 664 {} \;";
@@ -331,7 +336,8 @@ task 'wp_fix_perms', sub {
 
 desc 'increate php post_max_size and upload_max_size';
 task php_increase_file_upload_lim => sub {
-  my $size = $_[0]->{size};
+  my $params = process_task_args \@_, size => 1;
+  my $size = $params->{size};
   die 'No size provide' if !$size;
   my $file = '/opt/bitnami/php/etc/php.ini';
 
@@ -395,8 +401,8 @@ task php_increase_file_upload_lim => sub {
 ### GIT STUFF ########################
 desc 'initialize a git repo';
 task 'git_init', sub {
-  my $dir = $_[0]->{dir} || $_[1]->[0];
-  die 'No directory passed to git_init. git was not initted.' if !$dir;
+  my $params = process_task_args \@_, 'dir' => 1;
+  my $dir = $params->{dir};
   my $output = run "git status", cwd => $dir;
 
   if ($output =~ /On branch/) {
@@ -407,8 +413,9 @@ task 'git_init', sub {
 
 desc 'list all WP backups';
 task 'git_list_backups', sub {
-  my $quiet = $_[0]->{lc('quiet')} ? 1 : 0;
-  my $select = $_[0]->{lc('select')} ? 1 : 0;
+  my $params = process_task_args \@_, 'quiet', 'select';
+  my $quiet = $params->{quiet};
+  my $select = $params->{select};
   my @output;
   die ('No server specified') if $server eq '<local>';
   LOCAL { @output = run('git log --pretty=format:\'%H|%s\'', cwd => "/home/bitnami/backups/$server"); };
@@ -509,16 +516,18 @@ task 'tail_apache_error', sub {
 
 desc 'update hosts file';
 task 'add_host_entry', sub {
-  my $host = $_[0];
-  my $ip   = $_[1];
+  my $params = process_task_args (\@_, host => 1, ip => 1);
+  if(get_sudo_password()) {
+    sudo_password get_sudo_password();
+  }
   sudo {
     command => sub {
-      host_entry $host,
+      host_entry $params->{host},
       ensure => 'present',
-      ip     => $ip,
+      ip     => $params->{ip},
       on_change => sub { say 'added host entry'; };
     },
-    user => 'root'
+    user => 'root',
   };
 };
 
@@ -551,8 +560,8 @@ task "update_system_full", sub {
 
 desc 'delay code execution until snapshot is available';
 task 'snapshot_wait', sub {
-  my $snapshot_name = $_[0];
-  die ('No snapshot name provided.') if !$snapshot_name;
+  my $params = process_task_args \@_, 'snapshot_name' => 1;
+  my $snapshot_name = $params->{snapshot_name};
 
   my $snapshot_exists = 0;
   my $loop_count = 0;
@@ -591,19 +600,8 @@ task 'rsync_up', sub {
 
 desc 'distribute file from local to remove server';
 task 'file_distribute', sub {
-  my $file;
-  if (ref $_[0] eq 'HASH' && $_[0]->{file}) {
-    if ($_[0]->{file}) {
-      $file = $_[0]->{file};
-    }
-  } elsif (@{$_[1]}) {
-    $file = $_[1]->[0];
-  } elsif ($_[0]) {
-    $file = $_[0];
-  }
-  say $file;
-
-  die ('No file passed to task. Aborting.') if !$file;
+  my $params = process_task_args \@_, file => 1;
+  my $file = $params->{file};
 
   if (!-f $file) {
     die ('File does not exist on the local serve. Aborting.');
@@ -615,17 +613,8 @@ task 'file_distribute', sub {
 
 desc 'remove file server';
 task 'file_undistribute', sub {
-  my $file;
-  if (ref $_[0] eq 'HASH' && $_[0]->{file}) {
-    if ($_[0]->{file}) {
-      $file = $_[0]->{file};
-    }
-  } elsif (@{$_[1]}) {
-    $file = $_[1]->[0];
-  } elsif ($_[0]) {
-    $file = $_[0];
-  }
-  say $file;
+  my $params = process_task_args \@_, file => 1;
+  my $file = $params->{file};
 
   die ('No file passed to task. Aborting.') if !$file;
 
@@ -676,16 +665,10 @@ task 'wp_credentials_to_mysql_conf', sub {
 ### LIGHTSAIL MANAGEMENT ############
 desc 'create lightsail instance';
 task 'instance_create', sub {
-  my $size = $_[0]->{size};
-  my $name = $_[0]->{name};
-  my $region = $_[0]->{region};
-
-  if (!$size || !$name || !$region) {
-    print "No --size argument.\n" if !$size;
-    print "No --name argument.\n" if !$name;
-    print "No --region argument.\n" if !$region;
-    die ('Missing arguments. Aborting.');
-  }
+  my $params = process_task_args \@_, 'name' => 1, 'size' => 1, 'region' => 1;
+  my $name = $params->{name};
+  my $size = $params->{size};
+  my $region = $params->{region};
 
   die 'Unknown region. Aborting.' if ($region !~ /^us-west-2|us-east-1|us-east-2|west-2|east-1|east-2$/);
   if ($region !~ /^us/) {
@@ -748,8 +731,8 @@ task 'get_aws_availability_zones', sub {
 
 desc 'delete lightsail instance';
 task 'instance_delete', sub {
-  my $instance = $_[0]->{instance} || $_[1]->[0];
-  die ('No instance name provided. Aborting.') if !$instance;
+  my $params = process_task_args \@_, instance => 1;
+  my $instance = $params->{instance};
   die ('No instance by that name exists. Aborting.')
     if !run_task('instance_exists', params => { instance => $instance } );
 
@@ -760,14 +743,16 @@ task 'instance_delete', sub {
 
 desc 'determine if instance exists';
 task 'instance_exists', sub {
-  my $instance = $_[0]->{instance} || $_[1]->[0];
+  my $params = process_task_args \@_, instance => 1;
+  my $instance = $params->{instance};
   my $instances = run_task('instances_list', params => { quiet => 1 } );
   return grep { $_->Name eq $instance } @$instances;
 };
 
 desc 'reboot instance';
 task 'instance_reboot', sub {
-  my $instance = $_[0]->{instance} || $_[1]->[0];
+  my $params = process_task_args \@_, instance => 1;
+  my $instance = $params->{instance};
 
   my $exists = run_task('instance_exists', params => { instance => $instance } );
   die ('That instance does not exist. Aborting.') if !$exists;
@@ -779,7 +764,8 @@ task 'instance_reboot', sub {
 
 desc 'lists all lightsail instances';
 task 'instances_list', sub {
-  my $quiet = $_[0]->{lc('quiet')} ? 1 : 0;
+  my $params = process_task_args \@_, 'quiet';
+  my $quiet = $params->{quiet};
   my $instances = $service->GetInstances->Instances;
   if (!$quiet) {
     foreach my $instance (@$instances) {
@@ -809,21 +795,11 @@ task 'take_disk_snapshot', sub {
 
 desc 'snapshot an instance';
 task 'instance_snapshot', sub {
-  my $snapshot_name = ltime() . '_snapshot';
-  use Data::Dumper qw(Dumper);
-  my $wait;
-  if (ref $_[0] eq 'HASH' && $_[0]->{name}) {
-    if ($_[0]->{name}) {
-      $snapshot_name = $snapshot_name .= '_' . $_[0]->{name};
-    }
-    if ($_[0]->{wait}) {
-      $wait = 1;
-    }
-  } elsif (@{$_[1]}) {
-    $snapshot_name .= '_' . $_[1]->[0];
-  } elsif ($_[0]) {
-    $snapshot_name .= '_' . $_[0];
-  }
+  my $params = process_task_args \@_, 'snapshot_name', 'wait';
+  my $snapshot_name = $params->{snapshot_name};
+  my $name = ltime() . '_snapshot';
+  $name = $name .= '_' . $snapshot_name if $snapshot_name;
+  my $wait = $params->{wait};
 
   say "Taking snapshot named: $snapshot_name";
   my $result = $service->CreateInstanceSnapshot(InstanceSnapshotName => $snapshot_name, InstanceName => $server);
@@ -925,8 +901,8 @@ task 'tag_instance', sub {
 # manage ip addresses
 desc 'get static ip address';
 task 'ip_get_static', sub {
-  my $name = $_[0]->{name} || $_[1]->[0];
-  die ('No static ip name supplied. Aborting.') if !$name;
+  my $params = process_task_args \@_, 'name' => 1;
+  my $name = $params->{name};
   my $result = $service->GetStaicIp(
     StaticIpName => $name,
   );
@@ -936,7 +912,8 @@ task 'ip_get_static', sub {
 
 desc 'list all static ip addresses';
 task 'ips_list', sub {
-  my $quiet = $_[0]->{lc('quiet')} ? 1 : 0;
+  my $params = process_task_args \@_, 'quiet';
+  my $quiet = $params->{queit};
   my $ips = $service->GetStaticIps;
 
   if (!$quiet) {
@@ -949,7 +926,8 @@ task 'ips_list', sub {
 
 desc 'determine if static ip can be attached';
 task 'ip_is_available', sub {
-  my $ip_name = $_[0]->{ip_name} || $_[1]->[0];
+  my $params = process_task_args \@_, 'ip_name' => 1;
+  my $ip_name = $params->{ip_name};
 
   my $ips = run_task('ips_list', params => { queit => 1 });
   print Dumper $ips;
@@ -966,11 +944,9 @@ task 'ip_is_available', sub {
 
 desc 'attach a static ip to an instance';
 task 'ip_attach', sub {
-  my $ip = $_[0]->{ip};
-  my $instance = $_[0]->{instance};
-
-  die 'No instance name passed' if !$instance;
-  die 'No ip name passed' if !$ip;
+  my $params = process_task_args \@_, 'ip' => 1, 'instance' => 1;
+  my $ip = $params->{ip};
+  my $instance = $params->{instance};
 
   my $exists = run_task('instance_exists', params => { instance => $instance });
 
@@ -992,8 +968,8 @@ task 'ip_attach', sub {
 # manage domains
 desc 'create a domain';
 task 'domain_create', sub {
-  my $domain = $_[0]->{name} || $_[1]->[0];
-  die ('No domain supplied. Aborting.') if !$domain;
+  my $params = process_task_args \@_, 'domain';
+  my $domain = $params->{domain};
 
   # creating domains available only in east region
   $service = Paws->service('Lightsail', region => 'us-east-1');
@@ -1009,9 +985,6 @@ before_task_start qr{test\d} => sub {
   #say 'hi';
 };
 
-before_task_start 'ALL' => sub {
-  $server = $_[0]->server->[0]->name;
-};
 
 sub wp {
   my $cmd   = shift;
@@ -1050,4 +1023,5 @@ sub wp {
 =back
 
 =cut
+
 1;
