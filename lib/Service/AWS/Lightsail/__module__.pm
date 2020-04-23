@@ -16,6 +16,7 @@ use JSON::Parse 'parse_json';
 my $server = '';
 my $server_name = '';
 
+my $service = Paws->service('Lightsail', region => 'us-west-2');
 Rex::Config->set_path([Rex::Config->get_path, '/opt/bitnami/mysql/bin']);
 Rex::Config->set_verbose_run(1);
 
@@ -386,7 +387,7 @@ task php_increase_file_upload_lim => sub {
     sed qr{upload_max_filesize.*$}, "upload_max_filesize = $size", $file;
   };
 
-  run_task('restart_apache');
+  run_task('restart_stack');
 
 };
 
@@ -1036,4 +1037,17 @@ sub wp {
   }
 }
 
+=pod
+
+=head1 FUNCTIONS
+
+=over 1
+
+=item wp_backup --maint_mode=0|1 --type=$str --maint_remain
+
+=item ip_is_available --maint_mode=0|1 --type=$str --maint_remain
+
+=back
+
+=cut
 1;
