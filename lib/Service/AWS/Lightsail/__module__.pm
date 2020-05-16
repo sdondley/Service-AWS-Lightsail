@@ -15,22 +15,18 @@ use JSON::Parse 'parse_json';
 my $service = Paws->service('Lightsail', region => 'us-west-2');
 Rex::Config->set_path([Rex::Config->get_path, '/opt/bitnami/mysql/bin']);
 Rex::Config->set_verbose_run(1);
+#key_auth;
 
-group 'lightsail', 'WordPress-test', 'WordPress-ilwu63-2', 'ilwu63';
-group 'local', 'iMac5K';
+#group 'lightsail', 'WordPress-test', 'WordPress-ilwu63-2', 'ilwu63';
+#group 'local', 'iMac5K';
 
-my $server;
 
-{
-no warnings 'once';
-$server = $main::server;
-}
 
 # common vars
 my $wp_root = '/home/bitnami/apps/wordpress/htdocs';
 
 task 'test', sub {
-  say $server;
+  #  say connection->server->name;
 
 };
 
@@ -51,7 +47,7 @@ task 'wp_rpt_version', sub {
   if ($remote_version && $remote_version eq $local_version) {
     say "WordPress versions match: $remote_version";
   } else {
-    say "WordPress version on " . $server . ": $remote_version";
+    say "WordPress version on " . connection->server->name . ": $remote_version";
   }
 };
 
@@ -67,7 +63,7 @@ desc "Dump remote database";
 task 'dump_remote_db', sub {
   my $file = '/home/bitnami/mysql_dumps/latest.sql';
   my $remote_dir = '/home/bitnami/mysql_dumps';
-  file $remote_dir, ensure => 'directory', on => $server;
+  file $remote_dir, ensure => 'directory', on => connection->server->name;
   run 'mv latest.sql backup.sql', cwd => $remote_dir;
   run './dump_mysql.sh',          cwd => $remote_dir;
   my %fs = stat($file);
@@ -87,7 +83,7 @@ task 'wp_backup', sub {
 
   # create backup directory
   my $time = ltime();
-  my $bu_dir = "/home/bitnami/backups/$server";
+  my $bu_dir = "/home/bitnami/backups/" . connection->server->name;
   my $skip_maint_mode = $live_bu;
 
   LOCAL {
@@ -101,20 +97,20 @@ task 'wp_backup', sub {
 
   # Get maintenance mode status. Pretend we are already in maintenance mode
   # to keep site online while doing backup
-  my $maint_status = $skip_maint_mode || run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
+  my $maint_status = $skip_maint_mode || run_task('wp_rpt_maint_mode', on => connection->server->name, params => { quiet => 1 } );
 
   $? = '';
-  run_task('wp_maint_mode_on', on => $server) if !$maint_status;
+  run_task('wp_maint_mode_on', on => connection->server->name) if !$maint_status;
   if ($?) {
-    run_task('wp_maint_mode_off', on => $server ) if !$maint_status;
+    run_task('wp_maint_mode_off', on => connection->server->name ) if !$maint_status;
     die 'Could not place site into maintenance mode. Aborting backup.';
   }
 
   my $r_file = '/home/bitnami/mysql_dumps/latest.sql';
   my $db_file = "$bu_dir/db/db.sql";
-  my $dump_success = run_task('dump_remote_db', on => $server);
+  my $dump_success = run_task('dump_remote_db', on => connection->server->name);
   if (!$dump_success) {
-    run_task('wp_maint_mode_off', on => $server) if !$maint_status;
+    run_task('wp_maint_mode_off', on => connection->server->name) if !$maint_status;
     die 'Could not dump remote database. Placing site back online and aborting backup.';
   }
   download $r_file, $db_file;
@@ -132,9 +128,11 @@ task 'wp_backup', sub {
 
 
   # done with backup restore site
-  run_task('wp_maint_mode_off', on => $server) unless $maint_status || $maint_remain;
+  run_task('wp_maint_mode_off', on => connection->server->name) unless $maint_status || $maint_remain;
 
   # commit the changes to git
+  use Data::Dumper qw(Dumper);
+  print Dumper $bu_dir;
   LOCAL {
     run ('git add .', cwd => $bu_dir);
     run ("git commit -m '$bu_type|$time'", cwd => $bu_dir);
@@ -151,15 +149,15 @@ task 'wp_upgrade', sub {
     return;
   }
 
-  run_task('wp_backup', on => $server, params => { maint_mode   => 1,
+  run_task('wp_backup', on => connection->server->name, params => { maint_mode   => 1,
                                                    maint_remain => 1,
                                                    type         => 'wp_upgrade' });
   my $success = wp('core update');
-  run_task('wp_maint_mode_on', on => $server);
+  run_task('wp_maint_mode_on', on => connection->server->name);
   #TODO: if $success != 1, restore backup
   $success = wp('core update-db');
   #TODO: if $success != 1, restore backup
-  run_task('wp_maint_mode_off', on => $server);
+  run_task('wp_maint_mode_off', on => connection->server->name);
 };
 
 desc 'update all WP plugins';
@@ -172,7 +170,7 @@ task 'wp_update_all_plugins', sub {
 
   $count = wp('plugin list --update=available --status=active --format=count');
   if ($count) {
-    run_task('wp_backup', on => $server, params =>{ type => 'plugin_upgrade' });
+    run_task('wp_backup', on => connection->server->name, params =>{ type => 'plugin_upgrade' });
   }
 
   #TODO: do something if $output != 1
@@ -189,7 +187,7 @@ task 'wp_update_all_themes', sub {
 
   $count = wp('theme list --update=available --status=active --format=count');
   if ($count) {
-    run_task('wp_backup', on => $server, params =>{ type => 'theme_upgrade' });
+    run_task('wp_backup', on => connection->server->name, params =>{ type => 'theme_upgrade' });
   }
 
   #TODO: do something if $output != 1
@@ -202,9 +200,9 @@ desc 'rollback wordpress site';
 task 'wp_rollback', sub {
   my $params = process_task_args \@_, 'hash' => 1;
   my $hash = $params->{hash};
-  my $from_dir = "/home/bitnami/backups/$server/wp/";
+  my $from_dir = "/home/bitnami/backups/connection->server->name/wp/";
 
-  LOCAL { run("git checkout $hash", cwd => "/home/bitnami/backups/$server"); };
+  LOCAL { run("git checkout $hash", cwd => "/home/bitnami/backups/connection->server->name"); };
 
   sudo TRUE;
   if(get_sudo_password()) {
@@ -215,12 +213,12 @@ task 'wp_rollback', sub {
 
   # cp db file to remote server
   file '/home/bitnami/db.sql',
-    source    => "/home/bitnami/backups/$server/db/db.sql",
+    source    => "/home/bitnami/backups/connection->server->name/db/db.sql",
     on_change => sub {
       run "mysql bitnami_wordpress < '/home/bitnami/db.sql'";
     };
 
-  LOCAL { run("git checkout master", cwd => "/home/bitnami/backups/$server"); };
+  LOCAL { run("git checkout master", cwd => "/home/bitnami/backups/connection->server->name"); };
   my $success = wp('core update-db');
   #TODO: if $success != 1, restore backup
 };
@@ -229,19 +227,19 @@ desc 'rollback WP to oldest backup';
 task 'wp_rollback_to_oldest', sub {
   my $hash = run_task('git_get_oldest_backup');
 
-  run_task('wp_rollback', on => $server, params => { hash => $hash } );
+  run_task('wp_rollback', on => connection->server->name, params => { hash => $hash } );
 };
 
 desc 'rollback WP to latest backup';
 task 'wp_rollback_to_newest', sub {
-  LOCAL { run("git checkout master", cwd => "/home/bitnami/backups/$server"); };
-  run_task('wp_rollback', on => $server );
+  LOCAL { run("git checkout master", cwd => "/home/bitnami/backups/connection->server->name"); };
+  run_task('wp_rollback', on => connection->server->name );
 };
 
 desc 'select WP backup';
 task 'wp_rollback_to_selected', sub {
-  my $hash = run_task('git_list_backups', on => $server, params => { select => 1 });
-  run_task('wp_rollback', on => $server, params => { hash => $hash } );
+  my $hash = run_task('git_list_backups', on => connection->server->name, params => { select => 1 });
+  run_task('wp_rollback', on => connection->server->name, params => { hash => $hash } );
 };
 
 
@@ -258,19 +256,19 @@ task 'wp_rpt_maint_mode', sub {
 
 desc 'toggle wordpress maintance mode';
 task 'wp_maint_toggle', sub {
-  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1} );
+  my $is_active = run_task('wp_rpt_maint_mode', on => connection->server->name, params => { quiet => 1} );
   say 'Toggling maintenance mode';
   if ($is_active) {
     wp('maintenance-mode deactivate');
   } else {
     wp('maintenance-mode activate');
   }
-  run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
+  run_task('wp_rpt_maint_mode', on => connection->server->name, params => { quiet => 1 });
 };
 
 desc 'turn wordpress site maintenance mode on';
 task 'wp_maint_mode_on', sub {
-  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 } );
+  my $is_active = run_task('wp_rpt_maint_mode', on => connection->server->name, params => { quiet => 1 } );
   if ($is_active) {
     say 'Maintenance mode already active. Doing nothing';
   } else {
@@ -284,7 +282,7 @@ task 'wp_maint_mode_on', sub {
 
 desc 'turn wordress site maintenance mode off';
 task 'wp_maint_mode_off', sub {
-  my $is_active = run_task('wp_rpt_maint_mode', on => $server, params => { quiet => 1 });
+  my $is_active = run_task('wp_rpt_maint_mode', on => connection->server->name, params => { quiet => 1 });
   if ($is_active) {
     my $out = wp('maintenance-mode deactivate');
     if (!$out) {
@@ -329,8 +327,8 @@ task 'wp_fix_perms', sub {
     sudo_password get_sudo_password();
   }
   run "sudo chown -R bitnami:daemon $wp_root";
-  run "sudo find $wp_root -type d -exec chmod 775 {} \;";
-  run "sudo find $wp_root -type f -exec chmod 664 {} \;";
+  run "sudo find $wp_root -type d -exec chmod 775 {} \\;";
+  run "sudo find $wp_root -type f -exec chmod 664 {} \\;";
   run "sudo chmod 640 $wp_root/wp-config.php";
 };
 
@@ -417,8 +415,8 @@ task 'git_list_backups', sub {
   my $quiet = $params->{quiet};
   my $select = $params->{select};
   my @output;
-  die ('No server specified') if $server eq '<local>';
-  LOCAL { @output = run('git log --pretty=format:\'%H|%s\'', cwd => "/home/bitnami/backups/$server"); };
+  die ('No server specified') if connection->server->name eq '<local>';
+  LOCAL { @output = run('git log --pretty=format:\'%H|%s\'', cwd => "/home/bitnami/backups/connection->server->name"); };
 
   my %commits;
   my $strp = DateTime::Format::Strptime->new(
@@ -533,7 +531,7 @@ task 'add_host_entry', sub {
 
 desc 'perfrom a system update with no snapshot';
 task "update_system_quick", sub {
-  if ($server eq '<local>') {
+  if (connection->server->name eq '<local>') {
     die 'No host passed to task. Aborting.';
   }
   sudo {
@@ -547,15 +545,15 @@ task "update_system_quick", sub {
 
 desc 'perform a system update with snapshot';
 task "update_system_full", sub {
-  if ($server eq '<local>') {
+  if (connection->server->name eq '<local>') {
     die 'No host passed to task. Aborting.';
   }
-  my $snapshot_name = run_task('instance_snapshot', on => $server, params => { name => 'pre_update', wait => 1 } );
+  my $snapshot_name = run_task('instance_snapshot', on => connection->server->name, params => { name => 'pre_update', wait => 1 } );
   if (!$snapshot_name) {
     die 'Unable to take instance snapshot. Aborting.';
   }
 
-  run_task('update_system_quick', on => $server);
+  run_task('update_system_quick', on => connection->server->name);
 };
 
 desc 'delay code execution until snapshot is available';
@@ -569,7 +567,7 @@ task 'snapshot_wait', sub {
   while (!$snapshot_exists && $loop_count < 120) {
     sleep 5;
     say 'Checking to see if snapshot is ready.';
-    $instances = run_task('get_all_instance_snapshots', on => $server),
+    $instances = run_task('get_all_instance_snapshots', on => connection->server->name),
     $snapshot_exists = grep { $snapshot_name eq $_->Name && $_->State eq 'available' } @$instances;
     $loop_count++;
   }
@@ -702,7 +700,7 @@ task 'instance_create', sub {
   while (!$instance_exists && $loop_count < 120) {
     sleep 5;
     say 'Checking to see if instance is ready.';
-    my $instances = run_task('instances_list', on => $server);
+    my $instances = run_task('instances_list', on => connection->server->name);
     $instance_exists = grep { $name eq $_->Name && $_->State->Name eq 'pending' } @$instances;
     $loop_count++;
   }
@@ -784,13 +782,13 @@ task 'update_hosts', sub {
     my $name = $i->Name;
     my $priv_ip = $i->PrivateIpAddress;
     my $pub_ip = $i->PublicIpAddress;
-    run_task('add_host_entry', on => $server, params => [ $name, $priv_ip ]);
+    run_task('add_host_entry', on => connection->server->name, params => [ $name, $priv_ip ]);
   }
 };
 
 desc 'snapshot a disk';
 task 'take_disk_snapshot', sub {
-  $service->CreateDiskSnapshot(DiskSnapshotName => 'test', InstanceName => $server);
+  $service->CreateDiskSnapshot(DiskSnapshotName => 'test', InstanceName => connection->server->name);
 };
 
 desc 'snapshot an instance';
@@ -802,7 +800,7 @@ task 'instance_snapshot', sub {
   my $wait = $params->{wait};
 
   say "Taking snapshot named: $snapshot_name";
-  my $result = $service->CreateInstanceSnapshot(InstanceSnapshotName => $snapshot_name, InstanceName => $server);
+  my $result = $service->CreateInstanceSnapshot(InstanceSnapshotName => $snapshot_name, InstanceName => connection->server->name);
   if ($wait) {
     $? = '';
     run_task('snapshot_wait' => params => [ $snapshot_name ]);
@@ -831,21 +829,21 @@ task 'get_all_instance_snapshots', sub {
     push @snaps, @{$result->InstanceSnapshots};
     $page_token = $result->NextPageToken;
   }
-  if ($server ne '<local>') {
-    @snaps = grep { $server eq $_->FromInstanceName } @snaps;
+  if (connection->server->name ne '<local>') {
+    @snaps = grep { connection->server->name eq $_->FromInstanceName } @snaps;
   }
   return \@snaps;
 };
 
 desc 'dumps all instance snapshots to screen';
 task 'dump_all_instance_snapshots', sub {
-  my $snaps = run_task('get_all_instance_snapshots', on => $server);
+  my $snaps = run_task('get_all_instance_snapshots', on => connection->server->name);
   print Dumper $snaps;
 };
 
 desc 'return the most recent instance snapshot';
 task 'get_latest_instance_snapshot', sub {
-  my $snaps = run_task('get_all_instance_snapshots', on => $server);
+  my $snaps = run_task('get_all_instance_snapshots', on => connection->server->name);
   my $newest = 0;
   foreach my $snap (@$snaps) {
     my $time = $snap->CreatedAt;
@@ -862,7 +860,7 @@ task 'get_latest_instance_snapshot', sub {
 
 desc 'dump the object of the most recently created instance object to the screen';
 task 'dump_latest_instance_snapshot', sub {
-  my $snap = run_task('get_latest_instance_snapshot', on => $server);
+  my $snap = run_task('get_latest_instance_snapshot', on => connection->server->name);
   print Dumper $snap;
 
 };
